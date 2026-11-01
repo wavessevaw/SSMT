@@ -40,6 +40,57 @@ class InterruptedInstallTest(unittest.TestCase):
         self.assertFalse(rig.inst.var.exists())
         self.assertEqual(rig.sys.calls, [])
 
+    def test_atomic_boot_write_keeps_old_file_when_flush_fails(self):
+        rig = self.rig
+        target = rig.tmp / "boot.sh"
+        target.write_bytes(b"old complete script")
+        with patch.object(fixture.kedavra_install.os, "fsync", side_effect=OSError("flush failed")):
+            with self.assertRaisesRegex(OSError, "flush failed"):
+                rig.inst._write_file_atomic(target, b"new complete script")
+        self.assertEqual(target.read_bytes(), b"old complete script")
+        self.assertEqual(list(rig.tmp.glob(".kedavra-*")), [])
+
+    def test_atomic_boot_write_keeps_old_file_when_replace_fails(self):
+        rig = self.rig
+        target = rig.tmp / "boot.sh"
+        target.write_bytes(b"old complete script")
+        with patch.object(Path, "replace", side_effect=OSError("rename failed")):
+            with self.assertRaisesRegex(OSError, "rename failed"):
+                rig.inst._write_file_atomic(target, b"new complete script")
+        self.assertEqual(target.read_bytes(), b"old complete script")
+        self.assertEqual(list(rig.tmp.glob(".kedavra-*")), [])
+        rig.inst._write_file_atomic(target, b"new complete script")
+        self.assertEqual(target.read_bytes(), b"new complete script")
+
+    def test_restoration_flush_failure_preserves_complete_current_file(self):
+        rig = self.rig
+        target = rig.tmp / "boot.sh"
+        target.write_bytes(b"previous installation")
+        saved = rig.inst._snapshot_file(target)
+        target.write_bytes(b"complete candidate script")
+        with patch.object(fixture.kedavra_install.os, "fsync", side_effect=OSError("flush failed")):
+            with self.assertRaisesRegex(OSError, "flush failed"):
+                rig.inst._restore_file(target, saved)
+        self.assertEqual(target.read_bytes(), b"complete candidate script")
+        rig.inst._restore_file(target, saved)
+        self.assertEqual(target.read_bytes(), b"previous installation")
+        self.assertEqual(list(rig.tmp.glob(".kedavra-*")), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX ownership and symlink contract")
+    def test_atomic_write_preserves_symlink_and_target_metadata(self):
+        rig = self.rig
+        target, link = rig.tmp / "target", rig.tmp / "link"
+        target.write_bytes(b"previous")
+        target.chmod(0o640)
+        before = target.stat()
+        link.symlink_to(target)
+        rig.inst._write_file_atomic(link, b"candidate")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(target.read_bytes(), b"candidate")
+        after = target.stat()
+        self.assertEqual((after.st_mode, after.st_uid, after.st_gid),
+                         (before.st_mode, before.st_uid, before.st_gid))
+
     def test_startup_recovery_restores_old_runtime_without_installing_bundle(self):
         rig = self.rig
         rig.inst.install()

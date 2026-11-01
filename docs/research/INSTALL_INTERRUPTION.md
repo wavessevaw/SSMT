@@ -38,3 +38,19 @@ no-op startup, failed initialization and lifecycle cleanup.
 Recovery is **not automatic in the early-boot service**. This does not prove a safe boot following every interruption, a durable complete runtime after power loss, real systemd behavior or real bind-mount interactions. Runtime/config writes are not all atomic/durably flushed; journal fsync alone is not a power-loss guarantee. The bootstrap and watchdog paths still require independent boot fault injection and hardware verification. A retained or malformed journal can intentionally stop backend initialization and requires investigation; the plugin UI may consequently be unavailable until that failure is resolved.
 
 Do not classify the complete installer blocker as fixed or issue a device-ready candidate on this evidence alone. This branch remains EXPERIMENTAL and must pass the candidate's full regression, including the unchanged historical guards. Rollback is a revert of this branch; Stable tags and main remain unchanged.
+
+## Atomic configuration replacement
+
+Installation now writes boot/profile scripts, the systemd unit and limits through
+a same-directory temporary file: write, flush, set ownership/mode, fsync, replace,
+then fsync the parent directory on POSIX. Rollback of regular-file snapshots uses
+the same writer with the saved metadata. Existing symlink representation is kept;
+its resolved target receives the complete replacement.
+
+Injected file-fsync and rename failures preserve the previous complete file and
+clean up temporary files. Rollback-flush failure also preserves the current
+complete file for a subsequent recovery attempt. A POSIX test verifies symlink,
+mode and owner preservation. Local Windows interruption tests: 13 PASS, 3 explicit
+POSIX skips. Upgrade tests: 12 PASS, one cannot execute without `sh`; Linux remains
+required. These results do not validate sudden power loss: runtime-tree durability,
+directory removals and the complete boot sequence still require verification.

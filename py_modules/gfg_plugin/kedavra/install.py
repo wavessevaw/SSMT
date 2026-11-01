@@ -350,6 +350,42 @@ class Installer:
         return ("file", path.read_bytes(), (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid))
 
     @staticmethod
+    def _write_file_atomic(path, data, metadata=None):
+        """Persist a complete replacement before exposing it to boot/systemd.
+
+        Keep existing symlink representation and target metadata, matching the
+        installer's snapshot/restore contract. This alone does not flush runtime
+        libraries or make the entire transaction power-loss safe.
+        """
+        target = path.resolve(strict=False) if path.is_symlink() else path
+        previous = target.stat() if target.exists() else None
+        mode, uid, gid = metadata if metadata is not None else (
+            (stat.S_IMODE(previous.st_mode), previous.st_uid, previous.st_gid)
+            if previous else (0o644, None, None))
+        pending = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".kedavra-", delete=False) as stream:
+                pending = Path(stream.name)
+                stream.write(data)
+                stream.flush()
+                if uid is not None and hasattr(os, "chown"):
+                    current = pending.stat()
+                    if (current.st_uid, current.st_gid) != (uid, gid):
+                        os.chown(pending, uid, gid)
+                pending.chmod(mode)
+                os.fsync(stream.fileno())
+            pending.replace(target)
+            if os.name == "posix":
+                fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
+
+    @staticmethod
     def _restore_file(path, saved):
         kind, data, extra = saved
         if kind == "symlink":
@@ -373,13 +409,7 @@ class Installer:
         elif path.exists() and not path.is_file():
             raise RuntimeError(f"cannot restore installer file over directory: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        mode, uid, gid = extra
-        path.chmod(mode)
-        if hasattr(os, "chown"):
-            current = path.stat()
-            if (current.st_uid, current.st_gid) != (uid, gid):
-                os.chown(path, uid, gid)
+        Installer._write_file_atomic(path, data, metadata=extra)
 
     def install(self):
         with self._install_lock():
@@ -477,14 +507,14 @@ class Installer:
             self.state.mkdir(parents=True, exist_ok=True)
             for f in ("trial", "healthy", "auto_rollback", "ldd_failed"):
                 (self.state / f).unlink(missing_ok=True)
-            self.boot.write_text(BOOT_SH.format(state=self.state, runtime=self.runtime, loader=LOADER))
-            self.tune.write_text(tune_script(self.state, self.profile_orig, self.profile_done))
-            self.untune.write_text(restore_script(self.profile_orig, self.profile_done))
+            self._write_file_atomic(self.boot, BOOT_SH.format(state=self.state, runtime=self.runtime, loader=LOADER).encode())
+            self._write_file_atomic(self.tune, tune_script(self.state, self.profile_orig, self.profile_done).encode())
+            self._write_file_atomic(self.untune, restore_script(self.profile_orig, self.profile_done).encode())
             self.unit.parent.mkdir(parents=True, exist_ok=True)
-            self.unit.write_text(UNIT.format(boot=self.boot, tune=self.tune))
+            self._write_file_atomic(self.unit, UNIT.format(boot=self.boot, tune=self.tune).encode())
             try:
                 self.limits.parent.mkdir(parents=True, exist_ok=True)
-                self.limits.write_text(LIMITS)
+                self._write_file_atomic(self.limits, LIMITS.encode())
             except OSError:
                 pass
             rc, out = self.run(["systemctl", "daemon-reload"])
