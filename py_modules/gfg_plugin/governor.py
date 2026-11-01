@@ -38,6 +38,7 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+ACT_CACHE_S = 0.5  # Stable 3.2.2 polling bound
 WINDOW_S = 8.0
 FAST_WINDOW_S = 5.0
 SETTLE_S = 2.0
@@ -165,6 +166,7 @@ class PowerGovernor:
         self.clock = clock
         self.journal = journal
         self.enabled = True
+        self._act_cache: Optional[Tuple[float, Dict[str, Any]]] = None
         self.restore_pending = False
         self.ac: Optional[bool] = None
         self.ac_changed_at = -1e9
@@ -232,7 +234,7 @@ class PowerGovernor:
     def stop(self, reason: str = "session-end") -> Dict[str, Any]:
         result: Dict[str, Any] = {"restored": False}
         if self.owned:
-            result = self.actuator.restore_if_owned()
+            result = self._wrote(self.actuator.restore_if_owned())
             self._note("governor-restore", reason=reason, restored=result.get("restored"), error=result.get("error"))
         if result.get("success") is False or result.get("error"):
             # The player's TDP is still owed: retried every tick, no new claim until it is back.
@@ -244,12 +246,12 @@ class PowerGovernor:
         return result
 
     def _limits(self) -> Dict[str, Optional[float]]:
-        st = self.actuator.status()
+        st = self._act()
         low = max(MIN_TDP_W, float(st.get("minimum_tdp_w") or 0.0))
         return {"low": low, "ceiling": st.get("initial_tdp_w") or st.get("ceiling_tdp_w"), "draw": st.get("draw_w")}
 
     def _start(self, key: str, objective: str) -> None:
-        claim = self.actuator.claim()
+        claim = self._wrote(self.actuator.claim())
         if not claim.get("owned"):
             self.paused = claim.get("error") or "TDP control is not available"
             self._note("governor-unavailable", error=self.paused)
@@ -332,7 +334,7 @@ class PowerGovernor:
         target = round(max(lim["low"] or MIN_TDP_W, min(ceiling, watts)), 1)
         if self.tdp is not None and abs(target - self.tdp) < 0.05:
             return False
-        result = self.actuator.set_tdp_w(target)
+        result = self._wrote(self.actuator.set_tdp_w(target))
         if not result.get("success"):
             state = result.get("state") or {}
             if state.get("external_change"):
@@ -361,7 +363,7 @@ class PowerGovernor:
     def _external(self, now: float) -> bool:
         """An outside TDP change: SteamOS's own after a charger change (take over again, its
         value is the new ceiling), else the player's (pause for this game). True while waiting."""
-        observed = self.actuator.status().get("observed_tdp_w")
+        observed = self._act().get("observed_tdp_w")
         steamos = (isinstance(observed, (int, float)) and self.player_ceiling is not None
                    and abs(observed - self.player_ceiling) < 0.55)
         if now - self.ac_changed_at <= AC_GRACE_S or steamos:
@@ -369,7 +371,7 @@ class PowerGovernor:
             # the very value it had when the Governor took over), not the player's slider.
             was = self.tdp
             self.external_at = None
-            claim = self.actuator.claim()
+            claim = self._wrote(self.actuator.claim())
             if not claim.get("owned"):
                 self._pause(claim.get("error") or "TDP control is not available")
                 return True
@@ -447,7 +449,7 @@ class PowerGovernor:
                 self._write(self.ceiling or 15.0, "quality")
             elif self.cap > 0:
                 self._first_level(self.cap)
-        if self.external_at is None and self.owned and self.actuator.verify_ownership().get("external_change"):
+        if self.external_at is None and self.owned and self._verified().get("external_change"):
             self.owned = False
             self.external_at = now
         if self.external_at is not None and not self.paused:
@@ -736,8 +738,30 @@ class PowerGovernor:
         ceiling = self._top()
         return self.tdp >= ceiling - 0.05
 
+    def _wrote(self, result: Any) -> Any:
+        self._act_cache = None
+        return result
+
+    def _verified(self) -> Dict[str, Any]:
+        """The ownership check returns the actuator's readings too: they serve the rest of the tick."""
+        value = self.actuator.verify_ownership()
+        self._act_cache = (self.clock(), value)
+        return value
+
+    def _act(self) -> Dict[str, Any]:
+        """The actuator's readings (three sysfs files, the draw one an SMU query) once per tick:
+        the service asks for the Governor's status four or five times a second (3.2.2)."""
+        if not self.actuator:
+            return {}
+        now = self.clock()
+        if self._act_cache is not None and 0.0 <= now - self._act_cache[0] < ACT_CACHE_S:
+            return self._act_cache[1]
+        value = self.actuator.status()
+        self._act_cache = (now, value)
+        return value
+
     def status(self) -> Dict[str, Any]:
-        act = self.actuator.status() if self.actuator else {}
+        act = self._act() if self.actuator else {}
         return {
             "enabled": self.enabled,
             "owned": self.owned,
