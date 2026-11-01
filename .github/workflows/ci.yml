@@ -34,6 +34,9 @@ jobs:
       - name: Review historical sandbox source changes
         if: always()
         run: python3 tools/guard_sandbox_source.py docs/baseline-3.2.2/sandbox-run.py.txt sandbox/run.py --output "$RUNNER_TEMP/source-comparison.json"
+      - name: Execute all protected 3.2.2 scenarios against candidate
+        if: ${{ !cancelled() }}
+        run: python3 -B tools/run_historical_sandbox.py --output "$RUNNER_TEMP/historical-sandbox.json"
       - name: Save simulation results
         if: always()
         uses: actions/upload-artifact@v4
@@ -45,6 +48,7 @@ jobs:
             ${{ runner.temp }}/stress.json
             ${{ runner.temp }}/comparison.json
             ${{ runner.temp }}/source-comparison.json
+            ${{ runner.temp }}/historical-sandbox.json
           if-no-files-found: warn
       - name: Frontend build is committed and current
         if: ${{ !cancelled() }}
