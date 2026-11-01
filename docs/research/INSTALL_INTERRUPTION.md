@@ -54,3 +54,12 @@ mode and owner preservation. Local Windows interruption tests: 13 PASS, 3 explic
 POSIX skips. Upgrade tests: 12 PASS, one cannot execute without `sh`; Linux remains
 required. These results do not validate sudden power loss: runtime-tree durability,
 directory removals and the complete boot sequence still require verification.
+
+The staged runtime is now fsynced after capability setup and before transaction
+creation: regular files first, directories bottom-up, without traversing symlink
+targets. Each live-runtime directory rename is followed by a parent-directory
+fsync. A failed staging flush leaves the previous runtime, service files and
+watchdog markers unchanged and creates no recovery journal. A POSIX test observes
+actual fsync descriptors and verifies file-before-directory ordering and exclusion
+of an external symlink target. Complete sudden-power-loss validation, including
+cleanup and recovery ordering, remains outstanding.

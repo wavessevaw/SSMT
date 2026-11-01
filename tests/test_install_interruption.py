@@ -40,6 +40,45 @@ class InterruptedInstallTest(unittest.TestCase):
         self.assertFalse(rig.inst.var.exists())
         self.assertEqual(rig.sys.calls, [])
 
+    def test_runtime_flush_failure_precedes_any_live_replacement(self):
+        rig = self.rig
+        rig.inst.install()
+        (rig.inst.runtime / "bin/gamescope").write_text("previous-runtime")
+        before = {p: rig.inst._snapshot_file(p) for p in rig.inst._install_paths()}
+        with patch.object(rig.inst, "_sync_runtime_tree", side_effect=OSError("runtime flush failed")):
+            with self.assertRaisesRegex(OSError, "runtime flush failed"):
+                rig.inst.install()
+        self.assertEqual((rig.inst.runtime / "bin/gamescope").read_text(), "previous-runtime")
+        self.assertEqual({p: rig.inst._snapshot_file(p) for p in before}, before)
+        self.assertFalse((rig.inst.var / "install-transaction.json").exists())
+        self.assertFalse((rig.inst.var / "runtime.rollback").exists())
+        self.assertFalse((rig.inst.var / "runtime.new").exists())
+
+    @unittest.skipUnless(os.name == "posix", "runtime durability uses POSIX fsync")
+    def test_runtime_flush_covers_tree_without_following_external_symlinks(self):
+        rig = self.rig
+        root = rig.tmp / "staged"
+        child = root / "lib"
+        child.mkdir(parents=True)
+        library = child / "library.so"
+        library.write_bytes(b"library")
+        outside = rig.tmp / "external"
+        outside.write_bytes(b"must not traverse")
+        (child / "external-link").symlink_to(outside)
+        seen = []
+        fsync = os.fsync
+        def observe(fd):
+            info = os.fstat(fd)
+            seen.append((info.st_dev, info.st_ino))
+            return fsync(fd)
+        def identity(path):
+            info = path.stat()
+            return info.st_dev, info.st_ino
+        with patch.object(fixture.kedavra_install.os, "fsync", side_effect=observe):
+            rig.inst._sync_runtime_tree(root)
+        self.assertEqual(seen, [identity(library), identity(child), identity(root)])
+        self.assertNotIn(identity(outside), seen)
+
     def test_atomic_boot_write_keeps_old_file_when_flush_fails(self):
         rig = self.rig
         target = rig.tmp / "boot.sh"

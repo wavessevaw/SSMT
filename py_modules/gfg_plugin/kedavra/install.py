@@ -255,6 +255,33 @@ class Installer:
             finally:
                 os.close(fd)
 
+    @staticmethod
+    def _sync_runtime_tree(root):
+        """Flush staged files (including setcap metadata), then directories.
+
+        No symlink targets outside the staged tree are traversed. This is an
+        installation-only operation, never a periodic backend task.
+        """
+        if os.name != "posix":
+            return
+        for directory, _, files in os.walk(root, topdown=False, followlinks=False):
+            for name in files:
+                path = Path(directory) / name
+                if path.is_symlink():
+                    continue
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise RuntimeError(f"unexpected runtime entry: {path}")
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
     def _save_install_transaction(self, transaction):
         pending = self.var / "install-transaction.new"
         if pending.is_symlink():
@@ -460,6 +487,12 @@ class Installer:
         if rc != 0:
             shutil.rmtree(tmp)
             raise RuntimeError("setcap: " + out.strip()[-300:])
+        try:
+            self._sync_runtime_tree(tmp)
+            self._sync_install_dir()
+        except Exception:
+            shutil.rmtree(tmp)
+            raise
         backup = self.var / "runtime.rollback"
         if backup.exists() or backup.is_symlink():
             shutil.rmtree(tmp)
@@ -503,7 +536,9 @@ class Installer:
             # Keep the old tree until every mandatory setup action has succeeded.
             if self.runtime.exists():
                 self.runtime.rename(backup)
+                self._sync_install_dir()
             tmp.rename(self.runtime)
+            self._sync_install_dir()
             self.state.mkdir(parents=True, exist_ok=True)
             for f in ("trial", "healthy", "auto_rollback", "ldd_failed"):
                 (self.state / f).unlink(missing_ok=True)
