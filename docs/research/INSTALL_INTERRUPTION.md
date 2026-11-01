@@ -63,3 +63,15 @@ watchdog markers unchanged and creates no recovery journal. A POSIX test observe
 actual fsync descriptors and verifies file-before-directory ordering and exclusion
 of an external symlink target. Complete sudden-power-loss validation, including
 cleanup and recovery ordering, remains outstanding.
+
+## Recovery cleanup ordering
+
+A fault-injection test reproduced loss of the committed recovery journal when
+the first cleanup directory flush failed: the journal was unlinked before that
+flush. Cleanup now flushes the state and installation directories before removing
+the journal, then flushes the journal removal separately. Failure before removal
+retains metadata for another startup recovery. Snapshot restoration also flushes
+directories after missing-file removal or symlink restoration. The reproducer
+failed before the change and passes afterwards; 19 interruption checks locally
+contain 15 passes and four explicit POSIX skips. Linux and full candidate gates
+remain required. This verifies error/retry ordering, not physical power-loss safety.

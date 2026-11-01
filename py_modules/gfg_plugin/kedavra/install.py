@@ -248,8 +248,12 @@ class Installer:
         return kind, data, extra
 
     def _sync_install_dir(self):
+        self._sync_directory(self.var)
+
+    @staticmethod
+    def _sync_directory(directory):
         if os.name == "posix":
-            fd = os.open(self.var, os.O_RDONLY | os.O_DIRECTORY)
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.fsync(fd)
             finally:
@@ -361,6 +365,11 @@ class Installer:
                 shutil.rmtree(backup)
         if staged.exists():
             shutil.rmtree(staged)
+        # Persist cleanup/restored marker removals before discarding recovery data.
+        # Retain the journal if either flush fails so startup can retry safely.
+        if self.state.exists():
+            self._sync_directory(self.state)
+        self._sync_install_dir()
         journal.unlink()
         self._sync_install_dir()
 
@@ -424,12 +433,15 @@ class Installer:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 os.symlink(data, path)
             Installer._restore_file(path.resolve(strict=False), extra)
+            Installer._sync_directory(path.parent)
             return
         if kind == "missing":
             if path.is_symlink() or path.is_file():
                 path.unlink()
             elif path.exists():
                 raise RuntimeError(f"cannot remove installer file over directory: {path}")
+            if path.parent.exists():
+                Installer._sync_directory(path.parent)
             return
         if path.is_symlink():
             path.unlink()

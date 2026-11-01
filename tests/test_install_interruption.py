@@ -40,6 +40,26 @@ class InterruptedInstallTest(unittest.TestCase):
         self.assertFalse(rig.inst.var.exists())
         self.assertEqual(rig.sys.calls, [])
 
+    def test_cleanup_flush_failure_retains_committed_journal_for_retry(self):
+        rig = self.rig
+        recover = rig.inst._recover_install_transaction
+        # Stop immediately before successful-install cleanup, retaining its journal.
+        def interrupt_cleanup():
+            if (rig.inst.var / "install-transaction.json").exists():
+                raise OSError("cleanup interrupted")
+            return recover()
+        with patch.object(rig.inst, "_recover_install_transaction", side_effect=interrupt_cleanup):
+            with self.assertRaisesRegex(OSError, "cleanup interrupted"):
+                rig.inst.install()
+        journal = rig.inst.var / "install-transaction.json"
+        self.assertTrue(journal.exists())
+        with patch.object(rig.inst, "_sync_install_dir", side_effect=OSError("cleanup flush failed")):
+            with self.assertRaisesRegex(OSError, "cleanup flush failed"):
+                rig.inst.recover_pending()
+        self.assertTrue(journal.exists(), "recovery metadata must outlive cleanup durability")
+        self.assertTrue(rig.inst.recover_pending())
+        self.assertFalse(journal.exists())
+
     def test_runtime_flush_failure_precedes_any_live_replacement(self):
         rig = self.rig
         rig.inst.install()
