@@ -43,6 +43,9 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent.parent
 
 class Plugin:
     async def _main(self) -> None:
+        self.lock = asyncio.Lock()
+        self.tasks = []
+        self.stopping = False
         self.home = Path(decky.DECKY_USER_HOME)
         self.owner = home_owner(self.home)
         uid = self.owner[0] if self.owner else 1000
@@ -50,6 +53,8 @@ class Plugin:
         self.runtime = paths.runtime_dir(self.home)
         ensure_dir(self.runtime, self.owner, stop=self.home)
         self.log = ActivityLog(self.runtime / "activity.jsonl", owner=self.owner)
+        self.inst = Installer(PLUGIN_DIR, self.home, uid=uid)
+        await self._recover_installer()
         self.telemetry = Telemetry(self.runtime / "telemetry", self.owner)
         self.settings = Settings(self.data / "settings.json", self.owner)
         self.migration_report = read_json(self.data / "migration-report.json")
@@ -57,7 +62,6 @@ class Plugin:
         await self._worker(self._first_start)
         self.telemetry.level = self.settings.data["telemetry"]["level"]
         self.ctl = Control(self.home, PLUGIN_DIR, uid=uid, data=self.runtime)
-        self.inst = Installer(PLUGIN_DIR, self.home, uid=uid)
         self.coexist = Coexistence(self.home, owner=self.owner, version=paths.VERSION)
         manager = SteamOSManagerTdp(home=str(self.home))
         actuator = SteamDeckPowerActuator(manager=manager, marker=self.runtime / "tdp-cap.json")
@@ -85,6 +89,15 @@ class Plugin:
         loop = asyncio.get_event_loop()
         self.tasks = [loop.create_task(self._loop()), loop.create_task(self._health())]
         self.log.record("plugin", "start", version=paths.VERSION)
+
+    async def _recover_installer(self) -> None:
+        try:
+            recovered = await self._worker(self.inst.recover_pending)
+        except Exception as error:
+            self.log.record("installer", "recovery-failed", error=str(error))
+            raise  # do not start controllers over an unresolved installation
+        if recovered:
+            self.log.record("installer", "recovered")
 
     def _first_start(self) -> None:
         mig = Migration(self.home, self.data, self.owner)
@@ -157,8 +170,10 @@ class Plugin:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         async with self.lock:
-            await self._worker(self.service.stop)
-        self.log.record("plugin", "unload")
+            if hasattr(self, "service"):
+                await self._worker(self.service.stop)
+        if hasattr(self, "log"):
+            self.log.record("plugin", "unload")
 
     async def _uninstall(self) -> None:
         # The engine stays installed: it is reversible from Setup, and other tools may use it.

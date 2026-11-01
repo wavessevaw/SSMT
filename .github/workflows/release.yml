@@ -39,12 +39,17 @@ jobs:
       - name: Review historical sandbox source changes
         if: always()
         run: python3 tools/guard_sandbox_source.py docs/baseline-3.2.2/sandbox-run.py.txt sandbox/run.py --output "$RUNNER_TEMP/source-comparison.json"
+      - name: Execute all protected 3.2.2 scenarios against candidate
+        # Keep candidate dispatch subject to the same historical execution gate as CI.
+        if: ${{ !cancelled() }}
+        run: python3 -B tools/run_historical_sandbox.py --output "$RUNNER_TEMP/historical-sandbox.json"
       - name: Save simulation results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: release-virtual-deck-results
           path: |
+            ${{ runner.temp }}/historical-sandbox.json
             ${{ runner.temp }}/SANDBOX_REPORT.md
             ${{ runner.temp }}/sandbox.json
             ${{ runner.temp }}/stress.json
@@ -60,6 +65,7 @@ jobs:
           node frontend/harness/smoke.mjs
 
   bench:
+    needs: test
     # Built on Ubuntu 24.04, whose glibc is older than SteamOS's, so the binary runs on the Deck.
     runs-on: ubuntu-24.04
     steps:
@@ -80,6 +86,7 @@ jobs:
           path: deck-bench
 
   gamescope:
+    needs: test
     runs-on: ubuntu-24.04
     container: archlinux:latest
     steps:

@@ -385,6 +385,20 @@ class Installer:
         with self._install_lock():
             return self._install_locked()
 
+    def recover_pending(self):
+        """Recover once at backend startup, without installing the bundled version.
+
+        An ordinary startup performs no systemd calls or filesystem writes.
+        Pending transactions use the same cross-process lock as Install/Remove.
+        Errors propagate to the caller; recovery metadata is retained for diagnosis.
+        """
+        journal = self.var / "install-transaction.json"
+        if not journal.exists() and not journal.is_symlink():
+            return False
+        with self._install_lock():
+            self._recover_install_transaction()
+        return True
+
     def _install_locked(self):
         # Recovery cannot own a symlinked runtime. Reject it before creating a
         # journal or touching staging, including dangling symlinks.

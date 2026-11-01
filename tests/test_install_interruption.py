@@ -34,6 +34,31 @@ class InterruptedInstallTest(unittest.TestCase):
                 self.assertFalse((rig.inst.var / "runtime.new").exists())
                 self.assertFalse((rig.inst.var / "runtime.rollback").exists())
 
+    def test_startup_without_transaction_does_not_create_installer_files(self):
+        rig = self.rig
+        self.assertFalse(rig.inst.recover_pending())
+        self.assertFalse(rig.inst.var.exists())
+        self.assertEqual(rig.sys.calls, [])
+
+    def test_startup_recovery_restores_old_runtime_without_installing_bundle(self):
+        rig = self.rig
+        rig.inst.install()
+        (rig.inst.runtime / "bin/gamescope").write_text("previous-runtime")
+        (rig.inst.bundle / "bin/gamescope").write_text("candidate-runtime")
+        def interrupt(argv, **kw):
+            if argv[:2] == ["systemctl", "enable"]:
+                raise SystemExit("interrupted before commit")
+            return rig.sys(argv, **kw)
+        rig.inst.run = interrupt
+        with self.assertRaises(SystemExit):
+            rig.inst.install()
+        fresh = fixture.kedavra_install.Installer(rig.inst.plugin_dir, rig.inst.home, root=rig.root, run=rig.sys)
+        rig.sys.calls.clear()
+        self.assertTrue(fresh.recover_pending())
+        self.assertEqual((fresh.runtime / "bin/gamescope").read_text(), "previous-runtime")
+        self.assertFalse(any(c[0] in ("setcap", "sh") for c in rig.sys.calls))
+        self.assertFalse(fresh.recover_pending())
+
     def test_retry_after_interruption_between_runtime_renames(self):
         rig = self.rig
         rig.inst.install()

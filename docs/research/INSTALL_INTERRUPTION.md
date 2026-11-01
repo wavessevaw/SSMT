@@ -27,6 +27,14 @@ could leave a journal which its own recovery then refused. No test requirement w
 removed. Local Windows runs explicitly skip POSIX lock and boot-shell execution;
 Linux CI must execute both.
 
-Recovery runs on the next Install/Remove operation, **not automatically in the early-boot service**. This does not prove a safe boot following every interruption, a durable complete runtime after power loss, real systemd behavior or real bind-mount interactions. Runtime/config writes are not all atomic/durably flushed; journal fsync alone is not a power-loss guarantee. The bootstrap and watchdog paths still require independent boot fault injection and hardware verification. A retained or malformed journal can intentionally stop further destructive actions and requires investigation.
+Recovery now also runs once during backend startup, before telemetry, migration,
+actuators or controller loops are initialized. It restores the previous runtime
+without reinstalling the bundle. A normal startup without a journal performs no
+installer writes or systemd calls. Recovery errors are recorded and propagated;
+controllers do not start over an unresolved journal. Unloading a partially
+initialized backend is supported. Local tests cover recovery without reinstall,
+no-op startup, failed initialization and lifecycle cleanup.
+
+Recovery is **not automatic in the early-boot service**. This does not prove a safe boot following every interruption, a durable complete runtime after power loss, real systemd behavior or real bind-mount interactions. Runtime/config writes are not all atomic/durably flushed; journal fsync alone is not a power-loss guarantee. The bootstrap and watchdog paths still require independent boot fault injection and hardware verification. A retained or malformed journal can intentionally stop backend initialization and requires investigation; the plugin UI may consequently be unavailable until that failure is resolved.
 
 Do not classify the complete installer blocker as fixed or issue a device-ready candidate on this evidence alone. This branch remains EXPERIMENTAL and must pass the candidate's full regression, including the unchanged historical guards. Rollback is a revert of this branch; Stable tags and main remain unchanged.
