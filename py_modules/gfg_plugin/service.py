@@ -251,7 +251,9 @@ class Service:
         coord = self.coord.tick(st)
 
         gov.enabled = bool(data["power"]["enabled"])
-        locked = req["phase"] in ("locked", "fixed") and confirmed
+        # `confirmed` above refers to last tick's policy, used by the pilot to
+        # evaluate its observations. It cannot acknowledge a newly selected point.
+        locked = req["phase"] in ("locked", "fixed") and self.coord.engine_runs(policy, st)
         split_status: Dict[str, Any] = {}
         if self.split is not None:
             gs = gov.status()
