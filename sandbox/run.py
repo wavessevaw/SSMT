@@ -329,9 +329,30 @@ def stale_status() -> Dict[str, Any]:
 
 @scenario
 def battery_drains_autopilot() -> Dict[str, Any]:
-    """Autopilot on battery from 23 %: below 20 % it keeps following the game (3.3.0: a 55 fps
-    game stays in the x2 family, no forced x3) within 12 W, without changing mode."""
+    """Autopilot on battery from 23 %: below 20 % it goes to x3.75 (with "above x3" on), once,
+    without changing mode."""
     rig = make_rig(VGame("g", 55.0), objective="autopilot", battery=23.0, above_x3=True)
+    rig.sensors.capacity_wh = 5.0  # drain fast
+    play(rig, 1500)
+    tl = rig.timeline
+    objs = [r["objective"] for r in tl]
+    switches = sum(1 for a, b in zip(objs, objs[1:]) if a != b)
+    out = {"objective_switches": switches, "final": objs[-1], "battery_final": round(tl[-1]["battery"], 1)}
+    check(out, "stays Autopilot", set(objs) == {"autopilot"}, f"{sorted(set(objs))}")
+    check(out, "Battery point x3.75 (24)", tl[-1]["point"] == 24, f"{tl[-1]['point']}")
+    locked = make_rig(VGame("g", 55.0), objective="autopilot", battery=23.0)
+    locked.sensors.capacity_wh = 5.0
+    play(locked, 1500)
+    check(out, "x3.75 locked (default): stays at x3 (30)", locked.timeline[-1]["point"] == 30,
+          f"{locked.timeline[-1]['point']}")
+    return out
+
+
+@scenario
+def battery_drains_smoothness() -> Dict[str, Any]:
+    """Autopilot on battery from 23 %: with Smoothness selected: below 20 % it keeps following the game (3.3.0: a 55 fps
+    game stays in the x2 family, no forced x3) within 12 W, without changing mode."""
+    rig = make_rig(VGame("g", 55.0), objective="autopilot", battery=23.0, above_x3=True, preference="smoothness")
     rig.sensors.capacity_wh = 5.0  # drain fast
     play(rig, 1500)
     tl = rig.timeline

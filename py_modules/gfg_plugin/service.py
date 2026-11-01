@@ -210,6 +210,7 @@ class Service:
             "autopilot": objective == "autopilot", "stable_point": self._stable_point(refresh) if game else None,
             "known_point": gp.get("point"), "bench_point": gp.get("bench_point"), "game_class": gp.get("class"), "dock": dock,
             "low_battery": self.autopilot.low_battery or data["autopilot"]["preference"] == "battery",
+            "preference": data["autopilot"]["preference"],
             "above_x3": data["engine"].get("above_x3", False),
             # Only a TDP the Governor manages is a power reading for the pilot: paused (the player's own
             # TDP) Autopilot must still climb when the game gets lighter (Deck report 3.0.7).

@@ -199,6 +199,16 @@ class PilotTest(unittest.TestCase):
         out = self.run_ctx(2, objective="battery", autopilot=True, low_battery=True, above_x3=True)
         self.assertEqual(out["point"], 24)
 
+    def test_autopilot_auto_low_battery_preserves_322_floor(self):
+        self.run_ctx(20, objective="autopilot", autopilot=True, above_x3=True)
+        out = self.run_ctx(2, objective="autopilot", autopilot=True, low_battery=True, above_x3=True)
+        self.assertEqual(out["point"], 24)
+
+    def test_autopilot_smoothness_preference_retains_game_point_on_low_battery(self):
+        self.run_ctx(20, objective="autopilot", autopilot=True, preference="smoothness")
+        out = self.run_ctx(2, objective="autopilot", autopilot=True, low_battery=True, preference="smoothness")
+        self.assertEqual(out["point"], 45)
+
     def test_failed_climbs_wait_longer_each_time(self):
         # 3.3.1: a point that did not hold waits 1, 2, 4 ... min before the next climb into it.
         p = self.p

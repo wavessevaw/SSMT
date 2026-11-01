@@ -55,7 +55,9 @@ class Autopilot:
         if self._heat(temp_c):
             reason = f"APU at {temp_c:.0f} C: the Governor lowers the limit" if temp_c is not None else "APU hot"
         elif self.low_battery:
-            reason = f"battery below {LOW_BATTERY:.0f} %: following the game within 12 W"
+            reason = (f"battery below {LOW_BATTERY:.0f} %: following the game within 12 W"
+                      if preference == "smoothness" else
+                      f"battery below {LOW_BATTERY:.0f} %: conserving power at the permitted low point")
         elif power.get("external_power"):
             reason = "on external power: adapting, target 12 W"
         else:
