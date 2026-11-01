@@ -14,6 +14,32 @@ from sandbox.vdeck import VGame
 
 
 class SavedSettingsUpgradeTest(unittest.TestCase):
+    def test_legacy_fixed_profile_migration_matches_322(self):
+        self.assertEqual(settings.normalize_profile({"fg": "x3"})["fg"], "auto")
+        for schema in (0, 1, 2, 3):
+            for mode in ("x2", "x3", "x3.75", "custom", "off", "auto"):
+                with self.subTest(schema=schema, mode=mode):
+                    saved = {"schema": schema, "profiles": {
+                        "default": {"fg": mode}, "app:123": {"fg": mode}}}
+                    migrated = settings.normalize(saved)
+                    for profile in migrated["profiles"].values():
+                        self.assertEqual(profile["fg"], "off" if mode == "off" else "auto")
+                    self.assertEqual(settings.normalize(migrated), migrated)
+
+    def test_new_fixed_selection_survives_legacy_migration_and_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(json.dumps({"schema": 3, "profiles": {"default": {"fg": "x3"}}}), encoding="utf-8")
+            store = settings.Settings(path)
+            self.assertEqual(store.profile_for(None)[1]["fg"], "auto")
+            for mode in ("x2", "x3", "x3.75", "custom"):
+                store.update_profile("default", {"fg": mode})
+                key = store.make_game_profile(123, "Game")
+                store.update_profile(key, {"fg": mode})
+                store = settings.Settings(path)
+                self.assertEqual(store.profile_for(None)[1]["fg"], mode)
+                self.assertEqual(store.profile_for(123)[1]["fg"], mode)
+
     def test_322_explicit_power_choices_survive_schema_upgrade(self):
         for split in (False, True):
             for gpu_clock in (False, True):

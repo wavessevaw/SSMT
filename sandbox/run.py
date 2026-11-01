@@ -387,6 +387,15 @@ def docked_60hz() -> Dict[str, Any]:
 
 @scenario
 def fixed_x3_too_heavy() -> Dict[str, Any]:
+    """An old profile saved with a fixed x3: the mode now picks the multiplier."""
+    out = {"fg": settings_mod.normalize_profile({"fg": "x3"})["fg"], "off": settings_mod.normalize_profile({"fg": "off"})["fg"]}
+    check(out, "fixed x3 becomes auto", out["fg"] == "auto")
+    check(out, "off stays off", out["off"] == "off")
+    return out
+
+
+@scenario
+def current_fixed_x3_too_heavy() -> Dict[str, Any]:
     """The player fixed x3 but the game cannot hold 30: GFG reports it and does not change it."""
     rig = make_rig(VGame("g", 26.0), fg="x3", objective="balanced")
     play(rig, 300)
