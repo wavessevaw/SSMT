@@ -958,6 +958,19 @@ def dock_20w_scene_changes() -> Dict[str, Any]:
 @scenario
 def lcd_unlocked_75hz() -> Dict[str, Any]:
     """A Steam Deck LCD with its panel unlocked to 75 Hz: the ladder follows 75 Hz."""
+    rig = make_rig(VGame("lcd", 40.0), objective="balanced", refresh=75)
+    play(rig, 900)
+    m = metrics(rig, skip=120)
+    out: Dict[str, Any] = {"metrics": m}
+    check(out, "points on the 75 Hz ladder", set(m["points"]) <= set(ladder(75)), str(m["points"]))
+    check(out, "x2 (37) when the game holds it", m["point_final"] == 37, f"point {m['point_final']}")
+    check(out, "smooth >= 97 %", m["smooth_pct"] >= 97.0, f"{m['smooth_pct']} %")
+    return out
+
+
+@scenario
+def lcd_75hz_41fps_diagnostic() -> Dict[str, Any]:
+    """A Steam Deck LCD with its panel unlocked to 75 Hz: the ladder follows 75 Hz."""
     rig = make_rig(VGame("lcd", 41.0), objective="balanced", refresh=75)
     play(rig, 900)
     m = metrics(rig, skip=120)
@@ -978,6 +991,36 @@ def run_all(only: Optional[str] = None) -> Dict[str, Any]:
         r["pass"] = all(c["ok"] for c in r.get("checks", []))
         results[name] = r
     return results
+
+
+@scenario
+def lcd_native_60hz_output() -> Dict[str, Any]:
+    """Candidate LCD scope: native 60 Hz, 60 output FPS, Auto and fixed x2.
+
+    Simulation of a 40 FPS game; no claim that arbitrary games or hardware hold 60.
+    """
+    out: Dict[str, Any] = {"runs": {}}
+    for fg in ("auto", "x2"):
+        for objective in ("autopilot", "battery", "balanced", "quality"):
+            rig = make_rig(VGame("lcd-native", 40.0), fg=fg, objective=objective, refresh=60)
+            try:
+                play(rig, 120)
+                before = dict(rig.engine.counters)
+                play(rig, 480)
+                counts = {k: rig.engine.counters[k] - before[k] for k in before}
+                output = (counts["real"] + counts["gen"]) / 480
+                m = metrics(rig, skip=120)
+                key = f"{fg}/{objective}"
+                out["runs"][key] = {"metrics": m, "output_fps": output, "counters": counts}
+                check(out, f"{key}: output 60 within 1%", 59.4 <= output <= 60.000001, str(output))
+                check(out, f"{key}: smooth >= 97%", m["smooth_pct"] >= 97, str(m["smooth_pct"]))
+                expected = 20 if fg == "auto" and objective == "battery" else 30
+                check(out, f"{key}: source point", m["point_final"] == expected, str(m["point_final"]))
+                check(out, f"{key}: engine confirmed", rig.service.snapshot["policy"]["state"] == "confirmed")
+            finally:
+                rig.service.stop()
+                rig.engine.cpu.tmp.cleanup()
+    return out
 
 
 def report_md(results: Dict[str, Any]) -> str:
