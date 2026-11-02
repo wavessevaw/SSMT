@@ -24,6 +24,15 @@ class ReleaseWorkflowSafetyTest(unittest.TestCase):
         self.assertIn("out/BUILD_MANIFEST.json", self.workflow)
         self.assertIn("out/SHA256SUMS.txt", self.workflow)
 
+    def test_engine_builds_wait_for_software_admission(self):
+        for job in ("bench", "gamescope"):
+            self.assertRegex(self.workflow, rf"(?m)^  {job}:\s*\n    needs: test\s*$")
+
+    def test_manual_build_executes_protected_historical_scenarios(self):
+        self.assertIn('python3 -B tools/run_historical_sandbox.py --output "$RUNNER_TEMP/historical-sandbox.json"',
+                      self.workflow)
+        self.assertIn('${{ runner.temp }}/historical-sandbox.json', self.workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

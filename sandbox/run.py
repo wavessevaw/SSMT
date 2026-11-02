@@ -329,9 +329,30 @@ def stale_status() -> Dict[str, Any]:
 
 @scenario
 def battery_drains_autopilot() -> Dict[str, Any]:
-    """Autopilot on battery from 23 %: below 20 % it keeps following the game (3.3.0: a 55 fps
-    game stays in the x2 family, no forced x3) within 12 W, without changing mode."""
+    """Autopilot on battery from 23 %: below 20 % it goes to x3.75 (with "above x3" on), once,
+    without changing mode."""
     rig = make_rig(VGame("g", 55.0), objective="autopilot", battery=23.0, above_x3=True)
+    rig.sensors.capacity_wh = 5.0  # drain fast
+    play(rig, 1500)
+    tl = rig.timeline
+    objs = [r["objective"] for r in tl]
+    switches = sum(1 for a, b in zip(objs, objs[1:]) if a != b)
+    out = {"objective_switches": switches, "final": objs[-1], "battery_final": round(tl[-1]["battery"], 1)}
+    check(out, "stays Autopilot", set(objs) == {"autopilot"}, f"{sorted(set(objs))}")
+    check(out, "Battery point x3.75 (24)", tl[-1]["point"] == 24, f"{tl[-1]['point']}")
+    locked = make_rig(VGame("g", 55.0), objective="autopilot", battery=23.0)
+    locked.sensors.capacity_wh = 5.0
+    play(locked, 1500)
+    check(out, "x3.75 locked (default): stays at x3 (30)", locked.timeline[-1]["point"] == 30,
+          f"{locked.timeline[-1]['point']}")
+    return out
+
+
+@scenario
+def battery_drains_smoothness() -> Dict[str, Any]:
+    """Autopilot on battery from 23 %: with Smoothness selected: below 20 % it keeps following the game (3.3.0: a 55 fps
+    game stays in the x2 family, no forced x3) within 12 W, without changing mode."""
+    rig = make_rig(VGame("g", 55.0), objective="autopilot", battery=23.0, above_x3=True, preference="smoothness")
     rig.sensors.capacity_wh = 5.0  # drain fast
     play(rig, 1500)
     tl = rig.timeline
@@ -387,6 +408,15 @@ def docked_60hz() -> Dict[str, Any]:
 
 @scenario
 def fixed_x3_too_heavy() -> Dict[str, Any]:
+    """An old profile saved with a fixed x3: the mode now picks the multiplier."""
+    out = {"fg": settings_mod.normalize_profile({"fg": "x3"})["fg"], "off": settings_mod.normalize_profile({"fg": "off"})["fg"]}
+    check(out, "fixed x3 becomes auto", out["fg"] == "auto")
+    check(out, "off stays off", out["off"] == "off")
+    return out
+
+
+@scenario
+def current_fixed_x3_too_heavy() -> Dict[str, Any]:
     """The player fixed x3 but the game cannot hold 30: GFG reports it and does not change it."""
     rig = make_rig(VGame("g", 26.0), fg="x3", objective="balanced")
     play(rig, 300)
@@ -928,6 +958,19 @@ def dock_20w_scene_changes() -> Dict[str, Any]:
 @scenario
 def lcd_unlocked_75hz() -> Dict[str, Any]:
     """A Steam Deck LCD with its panel unlocked to 75 Hz: the ladder follows 75 Hz."""
+    rig = make_rig(VGame("lcd", 40.0), objective="balanced", refresh=75)
+    play(rig, 900)
+    m = metrics(rig, skip=120)
+    out: Dict[str, Any] = {"metrics": m}
+    check(out, "points on the 75 Hz ladder", set(m["points"]) <= set(ladder(75)), str(m["points"]))
+    check(out, "x2 (37) when the game holds it", m["point_final"] == 37, f"point {m['point_final']}")
+    check(out, "smooth >= 97 %", m["smooth_pct"] >= 97.0, f"{m['smooth_pct']} %")
+    return out
+
+
+@scenario
+def lcd_75hz_41fps_diagnostic() -> Dict[str, Any]:
+    """A Steam Deck LCD with its panel unlocked to 75 Hz: the ladder follows 75 Hz."""
     rig = make_rig(VGame("lcd", 41.0), objective="balanced", refresh=75)
     play(rig, 900)
     m = metrics(rig, skip=120)
@@ -948,6 +991,36 @@ def run_all(only: Optional[str] = None) -> Dict[str, Any]:
         r["pass"] = all(c["ok"] for c in r.get("checks", []))
         results[name] = r
     return results
+
+
+@scenario
+def lcd_native_60hz_output() -> Dict[str, Any]:
+    """Candidate LCD scope: native 60 Hz, 60 output FPS, Auto and fixed x2.
+
+    Simulation of a 40 FPS game; no claim that arbitrary games or hardware hold 60.
+    """
+    out: Dict[str, Any] = {"runs": {}}
+    for fg in ("auto", "x2"):
+        for objective in ("autopilot", "battery", "balanced", "quality"):
+            rig = make_rig(VGame("lcd-native", 40.0), fg=fg, objective=objective, refresh=60)
+            try:
+                play(rig, 120)
+                before = dict(rig.engine.counters)
+                play(rig, 480)
+                counts = {k: rig.engine.counters[k] - before[k] for k in before}
+                output = (counts["real"] + counts["gen"]) / 480
+                m = metrics(rig, skip=120)
+                key = f"{fg}/{objective}"
+                out["runs"][key] = {"metrics": m, "output_fps": output, "counters": counts}
+                check(out, f"{key}: output 60 within 1%", 59.4 <= output <= 60.000001, str(output))
+                check(out, f"{key}: smooth >= 97%", m["smooth_pct"] >= 97, str(m["smooth_pct"]))
+                expected = 20 if fg == "auto" and objective == "battery" else 30
+                check(out, f"{key}: source point", m["point_final"] == expected, str(m["point_final"]))
+                check(out, f"{key}: engine confirmed", rig.service.snapshot["policy"]["state"] == "confirmed")
+            finally:
+                rig.service.stop()
+                rig.engine.cpu.tmp.cleanup()
+    return out
 
 
 def report_md(results: Dict[str, Any]) -> str:

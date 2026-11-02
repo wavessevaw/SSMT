@@ -277,9 +277,10 @@ class PointPilot:
     def _auto(self, ctx: Dict[str, Any], steps: List[int], objective: str) -> Dict[str, Any]:
         now = self.clock()
         floor = self._battery_point(ctx, steps)
-        # Only the Battery mode chosen by hand pins its low point. A low battery under Autopilot
-        # no longer locks x3 (Deck report 3.2.1: 45 fps at 7.5 W dropped to 30 at 19 %).
-        low = objective == "battery"
+        # Auto retains the 3.2.2 low-battery point. The existing explicit Smoothness
+        # preference keeps following the game instead; fixed choices bypass _auto.
+        low = objective == "battery" or bool(ctx.get("autopilot") and ctx.get("low_battery")
+                                             and ctx.get("preference", "auto") != "smoothness")
         top = floor if low else steps[-1]
         light = ctx.get("game_class") == "light" and not self.light_failed
         bottom = max(steps[0], lowest_point(int(ctx.get("refresh") or 90), objective, light, bool(ctx.get("dock"))))

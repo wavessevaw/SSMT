@@ -248,8 +248,39 @@ class Installer:
         return kind, data, extra
 
     def _sync_install_dir(self):
+        self._sync_directory(self.var)
+
+    @staticmethod
+    def _sync_directory(directory):
         if os.name == "posix":
-            fd = os.open(self.var, os.O_RDONLY | os.O_DIRECTORY)
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    @staticmethod
+    def _sync_runtime_tree(root):
+        """Flush staged files (including setcap metadata), then directories.
+
+        No symlink targets outside the staged tree are traversed. This is an
+        installation-only operation, never a periodic backend task.
+        """
+        if os.name != "posix":
+            return
+        for directory, _, files in os.walk(root, topdown=False, followlinks=False):
+            for name in files:
+                path = Path(directory) / name
+                if path.is_symlink():
+                    continue
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise RuntimeError(f"unexpected runtime entry: {path}")
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 os.fsync(fd)
             finally:
@@ -334,6 +365,11 @@ class Installer:
                 shutil.rmtree(backup)
         if staged.exists():
             shutil.rmtree(staged)
+        # Persist cleanup/restored marker removals before discarding recovery data.
+        # Retain the journal if either flush fails so startup can retry safely.
+        if self.state.exists():
+            self._sync_directory(self.state)
+        self._sync_install_dir()
         journal.unlink()
         self._sync_install_dir()
 
@@ -350,6 +386,42 @@ class Installer:
         return ("file", path.read_bytes(), (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid))
 
     @staticmethod
+    def _write_file_atomic(path, data, metadata=None):
+        """Persist a complete replacement before exposing it to boot/systemd.
+
+        Keep existing symlink representation and target metadata, matching the
+        installer's snapshot/restore contract. This alone does not flush runtime
+        libraries or make the entire transaction power-loss safe.
+        """
+        target = path.resolve(strict=False) if path.is_symlink() else path
+        previous = target.stat() if target.exists() else None
+        mode, uid, gid = metadata if metadata is not None else (
+            (stat.S_IMODE(previous.st_mode), previous.st_uid, previous.st_gid)
+            if previous else (0o644, None, None))
+        pending = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".kedavra-", delete=False) as stream:
+                pending = Path(stream.name)
+                stream.write(data)
+                stream.flush()
+                if uid is not None and hasattr(os, "chown"):
+                    current = pending.stat()
+                    if (current.st_uid, current.st_gid) != (uid, gid):
+                        os.chown(pending, uid, gid)
+                pending.chmod(mode)
+                os.fsync(stream.fileno())
+            pending.replace(target)
+            if os.name == "posix":
+                fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
+
+    @staticmethod
     def _restore_file(path, saved):
         kind, data, extra = saved
         if kind == "symlink":
@@ -361,29 +433,40 @@ class Installer:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 os.symlink(data, path)
             Installer._restore_file(path.resolve(strict=False), extra)
+            Installer._sync_directory(path.parent)
             return
         if kind == "missing":
             if path.is_symlink() or path.is_file():
                 path.unlink()
             elif path.exists():
                 raise RuntimeError(f"cannot remove installer file over directory: {path}")
+            if path.parent.exists():
+                Installer._sync_directory(path.parent)
             return
         if path.is_symlink():
             path.unlink()
         elif path.exists() and not path.is_file():
             raise RuntimeError(f"cannot restore installer file over directory: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        mode, uid, gid = extra
-        path.chmod(mode)
-        if hasattr(os, "chown"):
-            current = path.stat()
-            if (current.st_uid, current.st_gid) != (uid, gid):
-                os.chown(path, uid, gid)
+        Installer._write_file_atomic(path, data, metadata=extra)
 
     def install(self):
         with self._install_lock():
             return self._install_locked()
+
+    def recover_pending(self):
+        """Recover once at backend startup, without installing the bundled version.
+
+        An ordinary startup performs no systemd calls or filesystem writes.
+        Pending transactions use the same cross-process lock as Install/Remove.
+        Errors propagate to the caller; recovery metadata is retained for diagnosis.
+        """
+        journal = self.var / "install-transaction.json"
+        if not journal.exists() and not journal.is_symlink():
+            return False
+        with self._install_lock():
+            self._recover_install_transaction()
+        return True
 
     def _install_locked(self):
         # Recovery cannot own a symlinked runtime. Reject it before creating a
@@ -416,6 +499,12 @@ class Installer:
         if rc != 0:
             shutil.rmtree(tmp)
             raise RuntimeError("setcap: " + out.strip()[-300:])
+        try:
+            self._sync_runtime_tree(tmp)
+            self._sync_install_dir()
+        except Exception:
+            shutil.rmtree(tmp)
+            raise
         backup = self.var / "runtime.rollback"
         if backup.exists() or backup.is_symlink():
             shutil.rmtree(tmp)
@@ -459,18 +548,20 @@ class Installer:
             # Keep the old tree until every mandatory setup action has succeeded.
             if self.runtime.exists():
                 self.runtime.rename(backup)
+                self._sync_install_dir()
             tmp.rename(self.runtime)
+            self._sync_install_dir()
             self.state.mkdir(parents=True, exist_ok=True)
             for f in ("trial", "healthy", "auto_rollback", "ldd_failed"):
                 (self.state / f).unlink(missing_ok=True)
-            self.boot.write_text(BOOT_SH.format(state=self.state, runtime=self.runtime, loader=LOADER))
-            self.tune.write_text(tune_script(self.state, self.profile_orig, self.profile_done))
-            self.untune.write_text(restore_script(self.profile_orig, self.profile_done))
+            self._write_file_atomic(self.boot, BOOT_SH.format(state=self.state, runtime=self.runtime, loader=LOADER).encode())
+            self._write_file_atomic(self.tune, tune_script(self.state, self.profile_orig, self.profile_done).encode())
+            self._write_file_atomic(self.untune, restore_script(self.profile_orig, self.profile_done).encode())
             self.unit.parent.mkdir(parents=True, exist_ok=True)
-            self.unit.write_text(UNIT.format(boot=self.boot, tune=self.tune))
+            self._write_file_atomic(self.unit, UNIT.format(boot=self.boot, tune=self.tune).encode())
             try:
                 self.limits.parent.mkdir(parents=True, exist_ok=True)
-                self.limits.write_text(LIMITS)
+                self._write_file_atomic(self.limits, LIMITS.encode())
             except OSError:
                 pass
             rc, out = self.run(["systemctl", "daemon-reload"])

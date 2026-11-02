@@ -29,27 +29,42 @@ jobs:
           node-version: "22"
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
       - if: ${{ !cancelled() }}
+        # Preserve raw FAIL; the mandatory scoped gate below decides admission.
+        continue-on-error: true
         run: python3 -m sandbox.run --report "$RUNNER_TEMP/SANDBOX_REPORT.md" --json "$RUNNER_TEMP/sandbox.json"
       - name: Seeded virtual Deck stress
         if: ${{ !cancelled() }}
         run: python3 -m sandbox.stress --seeds 30 --json "$RUNNER_TEMP/stress.json"
       - name: Check baseline scenario assertions
         if: always()
+        # Preserve raw FAIL; the mandatory scoped gate below decides admission.
+        continue-on-error: true
         run: python3 tools/compare_sandbox.py docs/baseline-3.2.2/sandbox.json "$RUNNER_TEMP/sandbox.json" "$RUNNER_TEMP/sandbox.json" --output "$RUNNER_TEMP/comparison.json"
       - name: Review historical sandbox source changes
         if: always()
         run: python3 tools/guard_sandbox_source.py docs/baseline-3.2.2/sandbox-run.py.txt sandbox/run.py --output "$RUNNER_TEMP/source-comparison.json"
+      - name: Execute all protected 3.2.2 scenarios against candidate
+        # Keep candidate dispatch subject to the same historical execution gate as CI.
+        if: ${{ !cancelled() }}
+        # Preserve raw FAIL; the mandatory scoped gate below decides admission.
+        continue-on-error: true
+        run: python3 -B tools/run_historical_sandbox.py --output "$RUNNER_TEMP/historical-sandbox.json"
+      - name: Enforce owner-approved LCD60 candidate scope
+        if: ${{ !cancelled() }}
+        run: python3 -B tools/candidate_scope_gate.py --current "$RUNNER_TEMP/sandbox.json" --historical "$RUNNER_TEMP/historical-sandbox.json" --revision "$GITHUB_SHA" --output "$RUNNER_TEMP/candidate-scope.json"
       - name: Save simulation results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: release-virtual-deck-results
           path: |
+            ${{ runner.temp }}/historical-sandbox.json
             ${{ runner.temp }}/SANDBOX_REPORT.md
             ${{ runner.temp }}/sandbox.json
             ${{ runner.temp }}/stress.json
             ${{ runner.temp }}/comparison.json
             ${{ runner.temp }}/source-comparison.json
+            ${{ runner.temp }}/candidate-scope.json
           if-no-files-found: warn
       - if: ${{ !cancelled() }}
         run: |
@@ -60,6 +75,7 @@ jobs:
           node frontend/harness/smoke.mjs
 
   bench:
+    needs: test
     # Built on Ubuntu 24.04, whose glibc is older than SteamOS's, so the binary runs on the Deck.
     runs-on: ubuntu-24.04
     steps:
@@ -80,6 +96,7 @@ jobs:
           path: deck-bench
 
   gamescope:
+    needs: test
     runs-on: ubuntu-24.04
     container: archlinux:latest
     steps:

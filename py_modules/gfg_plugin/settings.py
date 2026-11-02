@@ -60,12 +60,18 @@ def _int_in(value: Any, low: int, high: int, default: int) -> int:
     return min(high, max(low, v))
 
 
-def normalize_profile(raw: Any, name: str = "Default") -> Dict[str, Any]:
+def normalize_profile(raw: Any, name: str = "Default", *, schema: int = 3) -> Dict[str, Any]:
+    """Migrate a legacy profile unless its enclosing schema is supplied.
+
+    Through 3.2.2 fixed legacy values became Auto. Schema 4 reintroduced explicit
+    fixed choices; current edits and copies must pass that schema to preserve them.
+    """
     raw = raw if isinstance(raw, dict) else {}
     base = default_profile()
+    modes = FG_MODES if schema >= 4 else ("off", "auto")
     return {
         "name": str(raw.get("name") or name)[:80],
-        "fg": raw.get("fg") if raw.get("fg") in FG_MODES else base["fg"],
+        "fg": raw.get("fg") if raw.get("fg") in modes else base["fg"],
         "base_fps": _int_in(raw.get("base_fps"), *BASE_FPS_RANGE, base["base_fps"]),
         "objective": raw.get("objective") if raw.get("objective") in OBJECTIVES else base["objective"],
         "filters": filters.normalize(raw.get("filters")),
@@ -75,10 +81,12 @@ def normalize_profile(raw: Any, name: str = "Default") -> Dict[str, Any]:
 def normalize(raw: Any) -> Dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     out = defaults()
+    version = _int_in(raw.get("schema"), 0, SCHEMA, 0)
     profiles = raw.get("profiles") if isinstance(raw.get("profiles"), dict) else {}
     for key, value in profiles.items():
         if key == DEFAULT_PROFILE or (isinstance(key, str) and key.startswith("app:") and key[4:].isdigit()):
-            out["profiles"][key] = normalize_profile(value, "Default" if key == DEFAULT_PROFILE else key)
+            out["profiles"][key] = normalize_profile(value, "Default" if key == DEFAULT_PROFILE else key,
+                                                     schema=version)
     hud = raw.get("hud") if isinstance(raw.get("hud"), dict) else {}
     out["hud"] = {
         "enabled": bool(hud.get("enabled", True)),
@@ -91,7 +99,6 @@ def normalize(raw: Any) -> Dict[str, Any]:
     # Schema 3 (3.2.2) defaulted both controls on. Preserve its saved choices and its
     # defaults for omitted keys; new schema-4 installations retain the newer off defaults.
     # Earlier and unversioned input keeps the existing conservative migration behaviour.
-    version = _int_in(raw.get("schema"), 0, SCHEMA, 0)
     if version == 3:
         split, gpu_clock = bool(power.get("split", True)), bool(power.get("gpu_clock", True))
     elif version < 4:
@@ -141,7 +148,7 @@ class Settings:
         if key not in self.data["profiles"]:
             raise KeyError(key)
         merged = {**self.data["profiles"][key], **changes}
-        self.data["profiles"][key] = normalize_profile(merged, self.data["profiles"][key]["name"])
+        self.data["profiles"][key] = normalize_profile(merged, self.data["profiles"][key]["name"], schema=SCHEMA)
         self.save()
         return copy.deepcopy(self.data["profiles"][key])
 
@@ -152,7 +159,7 @@ class Settings:
         if key not in self.data["profiles"]:
             base = copy.deepcopy(self.data["profiles"][DEFAULT_PROFILE])
             base["name"] = name or key
-            self.data["profiles"][key] = normalize_profile(base, base["name"])
+            self.data["profiles"][key] = normalize_profile(base, base["name"], schema=SCHEMA)
             self.save()
         return key
 

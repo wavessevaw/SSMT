@@ -210,6 +210,7 @@ class Service:
             "autopilot": objective == "autopilot", "stable_point": self._stable_point(refresh) if game else None,
             "known_point": gp.get("point"), "bench_point": gp.get("bench_point"), "game_class": gp.get("class"), "dock": dock,
             "low_battery": self.autopilot.low_battery or data["autopilot"]["preference"] == "battery",
+            "preference": data["autopilot"]["preference"],
             "above_x3": data["engine"].get("above_x3", False),
             # Only a TDP the Governor manages is a power reading for the pilot: paused (the player's own
             # TDP) Autopilot must still climb when the game gets lighter (Deck report 3.0.7).
@@ -250,7 +251,9 @@ class Service:
         coord = self.coord.tick(st)
 
         gov.enabled = bool(data["power"]["enabled"])
-        locked = req["phase"] in ("locked", "fixed") and confirmed
+        # `confirmed` above refers to last tick's policy, used by the pilot to
+        # evaluate its observations. It cannot acknowledge a newly selected point.
+        locked = req["phase"] in ("locked", "fixed") and self.coord.engine_runs(policy, st)
         split_status: Dict[str, Any] = {}
         if self.split is not None:
             gs = gov.status()

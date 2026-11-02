@@ -205,7 +205,8 @@ class Migration:
             objective = objective_from_legacy(gov)
             display = "Default" if key == settings_mod.DEFAULT_PROFILE else str(info.get("display_name") or name)
             out["profiles"][key] = settings_mod.normalize_profile(
-                {"name": display, "fg": fg, "base_fps": base, "objective": objective, "filters": look}, display)
+                {"name": display, "fg": fg, "base_fps": base, "objective": objective, "filters": look}, display,
+                schema=settings_mod.SCHEMA)
             report["profiles"].append({"from": name, "to": key, "name": display, "fg": fg, "base_fps": base,
                                        "objective": objective, "filters": filters.summary(look)})
         default_gov = governor.get(LEGACY_DEFAULT) if isinstance(governor.get(LEGACY_DEFAULT), dict) else {}

@@ -27,6 +27,51 @@ could leave a journal which its own recovery then refused. No test requirement w
 removed. Local Windows runs explicitly skip POSIX lock and boot-shell execution;
 Linux CI must execute both.
 
-Recovery runs on the next Install/Remove operation, **not automatically in the early-boot service**. This does not prove a safe boot following every interruption, a durable complete runtime after power loss, real systemd behavior or real bind-mount interactions. Runtime/config writes are not all atomic/durably flushed; journal fsync alone is not a power-loss guarantee. The bootstrap and watchdog paths still require independent boot fault injection and hardware verification. A retained or malformed journal can intentionally stop further destructive actions and requires investigation.
+Recovery now also runs once during backend startup, before telemetry, migration,
+actuators or controller loops are initialized. It restores the previous runtime
+without reinstalling the bundle. A normal startup without a journal performs no
+installer writes or systemd calls. Recovery errors are recorded and propagated;
+controllers do not start over an unresolved journal. Unloading a partially
+initialized backend is supported. Local tests cover recovery without reinstall,
+no-op startup, failed initialization and lifecycle cleanup.
+
+Recovery is **not automatic in the early-boot service**. This does not prove a safe boot following every interruption, a durable complete runtime after power loss, real systemd behavior or real bind-mount interactions. Runtime/config writes are not all atomic/durably flushed; journal fsync alone is not a power-loss guarantee. The bootstrap and watchdog paths still require independent boot fault injection and hardware verification. A retained or malformed journal can intentionally stop backend initialization and requires investigation; the plugin UI may consequently be unavailable until that failure is resolved.
 
 Do not classify the complete installer blocker as fixed or issue a device-ready candidate on this evidence alone. This branch remains EXPERIMENTAL and must pass the candidate's full regression, including the unchanged historical guards. Rollback is a revert of this branch; Stable tags and main remain unchanged.
+
+## Atomic configuration replacement
+
+Installation now writes boot/profile scripts, the systemd unit and limits through
+a same-directory temporary file: write, flush, set ownership/mode, fsync, replace,
+then fsync the parent directory on POSIX. Rollback of regular-file snapshots uses
+the same writer with the saved metadata. Existing symlink representation is kept;
+its resolved target receives the complete replacement.
+
+Injected file-fsync and rename failures preserve the previous complete file and
+clean up temporary files. Rollback-flush failure also preserves the current
+complete file for a subsequent recovery attempt. A POSIX test verifies symlink,
+mode and owner preservation. Local Windows interruption tests: 13 PASS, 3 explicit
+POSIX skips. Upgrade tests: 12 PASS, one cannot execute without `sh`; Linux remains
+required. These results do not validate sudden power loss: runtime-tree durability,
+directory removals and the complete boot sequence still require verification.
+
+The staged runtime is now fsynced after capability setup and before transaction
+creation: regular files first, directories bottom-up, without traversing symlink
+targets. Each live-runtime directory rename is followed by a parent-directory
+fsync. A failed staging flush leaves the previous runtime, service files and
+watchdog markers unchanged and creates no recovery journal. A POSIX test observes
+actual fsync descriptors and verifies file-before-directory ordering and exclusion
+of an external symlink target. Complete sudden-power-loss validation, including
+cleanup and recovery ordering, remains outstanding.
+
+## Recovery cleanup ordering
+
+A fault-injection test reproduced loss of the committed recovery journal when
+the first cleanup directory flush failed: the journal was unlinked before that
+flush. Cleanup now flushes the state and installation directories before removing
+the journal, then flushes the journal removal separately. Failure before removal
+retains metadata for another startup recovery. Snapshot restoration also flushes
+directories after missing-file removal or symlink restoration. The reproducer
+failed before the change and passes afterwards; 19 interruption checks locally
+contain 15 passes and four explicit POSIX skips. Linux and full candidate gates
+remain required. This verifies error/retry ordering, not physical power-loss safety.

@@ -3,7 +3,7 @@ import sys
 import threading
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import helpers  # noqa: F401
 sys.modules.setdefault('decky', types.SimpleNamespace(logger=Mock()))
@@ -13,6 +13,36 @@ from sandbox.vdeck import VGame
 
 
 class LifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_startup_recovery_prevents_controller_initialization(self):
+        from gfg_plugin import plugin as mod
+        inst = Mock()
+        inst.recover_pending.side_effect = RuntimeError("retained recovery journal")
+        log = Mock()
+        with patch.object(mod.decky, "DECKY_USER_HOME", "/home/deck", create=True), \
+                patch.object(mod, "home_owner", return_value=None), \
+                patch.object(mod, "ensure_dir"), \
+                patch.object(mod, "ActivityLog", return_value=log), \
+                patch.object(mod, "Installer", return_value=inst), \
+                patch.object(mod, "Telemetry") as telemetry, \
+                patch.object(mod, "Service") as service:
+            p = Plugin()
+            with self.assertRaisesRegex(RuntimeError, "retained recovery journal"):
+                await p._main()
+            telemetry.assert_not_called()
+            service.assert_not_called()
+            self.assertEqual(p.tasks, [])
+            log.record.assert_called_once_with("installer", "recovery-failed", error="retained recovery journal")
+            await p._unload()  # partially initialized backend must still unload safely
+
+    async def test_startup_recovery_runs_once_and_reports_recovery(self):
+        p = Plugin()
+        p.log = Mock()
+        p.inst = Mock()
+        p.inst.recover_pending.return_value = True
+        await p._recover_installer()
+        p.inst.recover_pending.assert_called_once_with()
+        p.log.record.assert_called_once_with("installer", "recovered")
+
     async def test_worker_preserves_keywords_and_errors(self):
         p = Plugin()
         self.assertEqual(await p._worker(lambda *, value: value, value=42), 42)
